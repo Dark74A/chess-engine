@@ -24,9 +24,3 @@ A chess engine built in C using bitboards.
     - Killer moves + History Heuristics
 
 ---
-
-## 🛠️ Build Instructions
-
-```bash
-make
-./engine
