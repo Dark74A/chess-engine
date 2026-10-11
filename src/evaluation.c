@@ -515,10 +515,7 @@ Move findBestMove(Board *board, int maxDepth) {
         best = iterBest;
 
         long long ms = nowMs() - start;
-        printf("info depth %d score cp %d nodes %llu time %lld nps %llu\n",
-               d, alpha, (unsigned long long)nodesSearched, ms,
-               ms > 0 ? (unsigned long long)(nodesSearched * 1000ULL / (unsigned long long)ms) : 0ULL);
-        fflush(stdout);
+      
     }
     return best;
 }
