@@ -9,60 +9,9 @@
 
 
 
-typedef uint64_t U64;
+#include "bitboard.h"
 
 // Defining structs for board, Move, MoveList and Undo moves.
-typedef struct {
-    U64 wp, wn, wb, wr, wq, wk;
-    U64 bp, bn, bb, br, bq, bk;
-
-    U64 whitePieces;
-    U64 blackPieces;
-    U64 occupied;
-
-    bool shortBlack;
-    bool longBlack;
-    bool shortWhite;
-    bool longWhite;
-    int enPassantSquare;
-
-    int mover;
-} Board;
-typedef struct {
-    int from;
-    int to;
-    int promotionPiece;
-    int score;
-} Move;
-typedef struct {
-    size_t size;
-    Move* moves;
-    size_t count;
-} MoveList;
-typedef struct {
-    int from;
-    int to;
-    int movedPieceCode;
-    int capturedPieceCode;
-    int capturedSquare;
-    bool prevShortBlack, prevLongBlack, prevShortWhite, prevLongWhite;
-    int prevEnPassant;
-    int prevMover;
-
-    int rookFromSq;
-    int rookToSq;
-    int rookPieceCode;
-
-    bool wasEnPassant;
-} Undo;
-
-// Enums
-enum {
-    WHITE = 0, BLACK = 8,
-    PAWN = 1, KNIGHT = 2,  BISHOP = 3,  ROOK = 4,  QUEEN = 5,  KING = 6,
-};
-
-#define COLOR_MASK 0b1000
 
 /*
  *  Helper
@@ -72,27 +21,6 @@ enum {
 
 // ----------------- small helpers -----------------
 
-static inline U64 bit(int sq) {
-    assert(sq >= 0 && sq < 64);
-    return 1ULL << sq;
-}
-
-static inline int rankOf(int sq) {
-    return sq >> 3;
-}
-static inline int fileOf(int sq) {
-    return sq & 7;
-}
-static inline int sq_index(int rank, int file) {
-    return rank * 8 + file;
-}
-// Removes least significant 1 bit
-static inline int pop_lsb(U64 *b) {
-    U64 bb = *b;
-    int idx = __builtin_ctzll(bb); // returns least significant 1
-    *b = bb & (bb - 1);
-    return idx;
-}
 
 // ----------------- attack tables -----------------
 
@@ -148,6 +76,7 @@ void initAttackTables() {
 // ----------------- Move List -----------------
 
 void initMoveList(MoveList* mL, size_t size){
+    if (size == 0) size = 1;
     mL->size = size;
     mL->moves = (Move *) malloc(sizeof(Move) * size);
     mL->count = 0;
@@ -155,7 +84,9 @@ void initMoveList(MoveList* mL, size_t size){
 void addMove(MoveList* mL, Move move){
     if (mL->size == mL->count){
         size_t newSize = mL->size * 2;
-        mL->moves = (Move*) realloc(mL->moves, sizeof(Move) * newSize);
+        Move *newMoves = (Move*) realloc(mL->moves, sizeof(Move) * newSize);
+        if (!newMoves) return;
+        mL->moves = newMoves;
         mL->size = newSize;
     }
 
@@ -315,7 +246,7 @@ bool isAttacked(Board board, int row, int col, int color){
 // ----------------- Move generation -----------------
 
 void addMoveToListFromTo(MoveList* mL, int fromSq, int toSq, int promo) {
-    Move m;
+    Move m = {0};
     m.from = fromSq;
     m.to = toSq;
     m.promotionPiece = promo;
@@ -444,6 +375,7 @@ void kingMoves(Board* b, MoveList* mL, int sq) {
 
         // King-side
         if (b->shortWhite &&
+            (b->wr & bit(sq_index(0,7))) &&
             !(b->occupied & bit(sq_index(0,5))) &&
             !(b->occupied & bit(sq_index(0,6))) &&
             !isAttacked(*b, 0, 4, WHITE) &&
@@ -455,6 +387,7 @@ void kingMoves(Board* b, MoveList* mL, int sq) {
 
         // Queen-side
         if (b->longWhite &&
+            (b->wr & bit(sq_index(0,0))) &&
             !(b->occupied & bit(sq_index(0,3))) &&
             !(b->occupied & bit(sq_index(0,2))) &&
             !(b->occupied & bit(sq_index(0,1))) &&
@@ -469,6 +402,7 @@ void kingMoves(Board* b, MoveList* mL, int sq) {
     if (colorBit == BLACK && sq == sq_index(7,4)) {
 
         if (b->shortBlack &&
+            (b->br & bit(sq_index(7,7))) &&
             !(b->occupied & bit(sq_index(7,5))) &&
             !(b->occupied & bit(sq_index(7,6))) &&
             !isAttacked(*b, 7, 4, BLACK) &&
@@ -479,6 +413,7 @@ void kingMoves(Board* b, MoveList* mL, int sq) {
         }
 
         if (b->longBlack &&
+            (b->br & bit(sq_index(7,0))) &&
             !(b->occupied & bit(sq_index(7,3))) &&
             !(b->occupied & bit(sq_index(7,2))) &&
             !(b->occupied & bit(sq_index(7,1))) &&
@@ -543,6 +478,7 @@ void placePieceAt(Board* b, int sq, int pieceCode) {
     setPiece(b, sq, pieceCode);
 }
 bool applyMove(Board* b, Move mv, Undo* u) {
+    if (!b || !u || mv.from < 0 || mv.from >= 64 || mv.to < 0 || mv.to >= 64) return false;
     int fromSq   = mv.from;
     int toSq     = mv.to;
     int fromRank = fromSq / 8;
@@ -566,6 +502,8 @@ bool applyMove(Board* b, Move mv, Undo* u) {
 
     u->prevEnPassant = b->enPassantSquare;
     u->prevMover     = b->mover;
+    u->prevHalfmoveClock = b->halfmoveClock;
+    u->prevFullmoveNumber = b->fullmoveNumber;
 
     u->wasEnPassant  = false;
     u->rookFromSq   = -1;
@@ -658,10 +596,10 @@ bool applyMove(Board* b, Move mv, Undo* u) {
     }
 
     if ((u->capturedPieceCode & 7) == ROOK) {
-        if (toSq == 0)  b->longWhite  = false;
-        if (toSq == 7)  b->shortWhite = false;
-        if (toSq == 56) b->longBlack  = false;
-        if (toSq == 63) b->shortBlack = false;
+        if (u->capturedSquare == 0)  b->longWhite  = false;
+        if (u->capturedSquare == 7)  b->shortWhite = false;
+        if (u->capturedSquare == 56) b->longBlack  = false;
+        if (u->capturedSquare == 63) b->shortBlack = false;
     }
 
     /* ================= EN PASSANT SQUARE ================= */
@@ -671,6 +609,10 @@ bool applyMove(Board* b, Move mv, Undo* u) {
     } else {
         b->enPassantSquare = -1;
     }
+
+    if ((movingCode & 7) == PAWN || u->capturedPieceCode != 0) b->halfmoveClock = 0;
+    else b->halfmoveClock++;
+    if (moverColor == BLACK) b->fullmoveNumber++;
 
     /* ================= FINALIZE ================= */
 
@@ -701,6 +643,8 @@ void unmakeMove(Board* b, Undo* u) {
     b->shortBlack = u->prevShortBlack; b->longBlack = u->prevLongBlack;
     b->shortWhite = u->prevShortWhite; b->longWhite = u->prevLongWhite;
     b->enPassantSquare = u->prevEnPassant;
+    b->halfmoveClock = u->prevHalfmoveClock;
+    b->fullmoveNumber = u->prevFullmoveNumber;
 
     updateOccupancies(b);
 }
@@ -871,10 +815,10 @@ char rankChar(const int rank) {
 }
 char promotionChar(const int promotion) {
     switch (promotion) {
-        case KNIGHT: return 'N';
-        case BISHOP: return 'B';
-        case ROOK:   return 'R';
-        case QUEEN:  return 'Q';
+        case KNIGHT: return 'n';
+        case BISHOP: return 'b';
+        case ROOK:   return 'r';
+        case QUEEN:  return 'q';
         default:     return '\0';
     }
 }
@@ -920,7 +864,68 @@ void boardSetup(Board* b) {
     b->shortBlack  = true; b->shortWhite = true; b->longBlack  = true; b->longWhite = true;
     b->enPassantSquare = -1;
     b->mover = WHITE;
+    b->halfmoveClock = 0;
+    b->fullmoveNumber = 1;
     updateOccupancies(b);
+}
+
+bool boardFromFen(Board *b, const char *fen) {
+    if (!b || !fen) return false;
+    Board parsed = {0};
+    parsed.enPassantSquare = -1;
+    parsed.fullmoveNumber = 1;
+    int rank = 7, file = 0;
+    const char *p = fen;
+    while (*p && *p != ' ') {
+        if (*p == '/') { if (file != 8 || rank == 0) return false; rank--; file = 0; }
+        else if (*p >= '1' && *p <= '8') { file += *p - '0'; if (file > 8) return false; }
+        else {
+            int code = 0;
+            switch (*p) {
+                case 'P': code=PAWN|WHITE; break; case 'N': code=KNIGHT|WHITE; break;
+                case 'B': code=BISHOP|WHITE; break; case 'R': code=ROOK|WHITE; break;
+                case 'Q': code=QUEEN|WHITE; break; case 'K': code=KING|WHITE; break;
+                case 'p': code=PAWN|BLACK; break; case 'n': code=KNIGHT|BLACK; break;
+                case 'b': code=BISHOP|BLACK; break; case 'r': code=ROOK|BLACK; break;
+                case 'q': code=QUEEN|BLACK; break; case 'k': code=KING|BLACK; break;
+                default: return false;
+            }
+            if (file >= 8) return false;
+            setPiece(&parsed, rank * 8 + file++, code);
+        }
+        p++;
+    }
+    if (rank != 0 || file != 8 || (*p != ' ' && *p != '\0')) return false;
+    while (*p == ' ') p++;
+    if (*p == 'w') parsed.mover = WHITE;
+    else if (*p == 'b') parsed.mover = BLACK;
+    else return false;
+    while (*p && *p != ' ') p++;
+    while (*p == ' ') p++;
+    if (*p == '-') p++;
+    else {
+        while (*p && *p != ' ') {
+            switch (*p++) {
+                case 'K': parsed.shortWhite=true; break; case 'Q': parsed.longWhite=true; break;
+                case 'k': parsed.shortBlack=true; break; case 'q': parsed.longBlack=true; break;
+                default: return false;
+            }
+        }
+    }
+    while (*p == ' ') p++;
+    if (*p == '-') p++;
+    else if (p[0] >= 'a' && p[0] <= 'h' && p[1] >= '1' && p[1] <= '8') {
+        parsed.enPassantSquare = (p[1] - '1') * 8 + (p[0] - 'a'); p += 2;
+    } else return false;
+    while (*p == ' ') p++;
+    if (*p) { char *end; long value = strtol(p, &end, 10); if (end == p || value < 0 || value > 1000000) return false; parsed.halfmoveClock=(int)value; p=end; }
+    while (*p == ' ') p++;
+    if (*p) { char *end; long value = strtol(p, &end, 10); if (end == p || value < 1 || value > 1000000) return false; parsed.fullmoveNumber=(int)value; p=end; }
+    while (*p == ' ') p++;
+    if (*p) return false;
+    updateOccupancies(&parsed);
+    *b = parsed;
+    return true;
 }
 
 // ----------------- Perft / counting -----------------
@@ -937,7 +942,7 @@ uint64_t countMoves(Board* board, int depth) {
 
     for (size_t i = 0; i < cnt; i++) {
         Undo u;
-        applyMove(board, temp[i], &u);
+        if (!applyMove(board, temp[i], &u)) continue;
         count += countMoves(board, depth - 1);
         unmakeMove(board, &u);
     }
@@ -963,7 +968,7 @@ void perft_divide(Board board, int depth) {
 
     for (uint64_t i = 0; i < moveCount; i++) {
         Undo u;
-        applyMove(&board, moves[i], &u);
+        if (!applyMove(&board, moves[i], &u)) continue;
 
         uint64_t nodes = countMoves(&board, depth - 1);
 

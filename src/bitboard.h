@@ -63,6 +63,8 @@ typedef struct {
         int enPassantSquare;
 
         int mover;
+        int halfmoveClock;
+        int fullmoveNumber;
     } Board;
 typedef struct {
     int from;
@@ -84,6 +86,8 @@ typedef struct {
     bool prevShortBlack, prevLongBlack, prevShortWhite, prevLongWhite;
     int prevEnPassant;
     int prevMover;
+    int prevHalfmoveClock;
+    int prevFullmoveNumber;
 
     int rookFromSq;
     int rookToSq;
@@ -116,7 +120,7 @@ extern int PST_KING_END[8][8];
 extern int MVV_LVA[6][6];
 
 /* bit helpers */
-static inline U64 bit(int sq) { return 1ULL << (sq); }
+static inline U64 bit(int sq) { return (sq >= 0 && sq < 64) ? (1ULL << sq) : 0; }
 static inline int rankOf(int sq) { return (sq) >> 3; }
 static inline int fileOf(int sq) { return (sq) & 7; }
 static inline int sq_index(int rank, int file) { return (rank) * 8 + (file); }
@@ -133,7 +137,7 @@ static inline int pop_lsb(U64 *b) {
 void initAttackTables(void);
 
 /* move list helpers */
-void initMoveList(MoveList* mL, int size);
+void initMoveList(MoveList* mL, size_t size);
 void addMove(MoveList* mL, Move move);
 
 /* board helpers */
@@ -161,12 +165,12 @@ void generateMoves(Board* b, MoveList* moveList);
 /* apply / make / unmake */
 int removePieceAt(Board* b, int sq);
 void placePieceAt(Board* b, int sq, int pieceCode);
-void applyMove(Board* b, Move mv, Undo* u);
+bool applyMove(Board* b, Move mv, Undo* u);
 void unmakeMove(Board* b, Undo* u);
 
 /* array-based move generation */
-void generateMovesToArray(Board* b, Move* moves, int* outCount, int maxMoves);
-void generateLegalMovesToArray(Board *board, Move *outMoves, uint64_t *outCount, int maxMoves);
+void generateMovesToArray(Board* b, Move* moves, uint64_t* outCount, int maxMoves);
+void generateLegalMovesToArray(Board *board, Move *outMoves, uint64_t *outCount, size_t maxMoves);
 void generateLegalMoves (Board * board, MoveList* moves);
 
 /* helpers / printing */
@@ -187,6 +191,9 @@ int perft_main(void);
 int evaluate(Board* board);
 int search(Board *b, int depth);
 int minimax(Board * board, int depth, int alpha, int beta, int ply);
+bool boardFromFen(Board *board, const char *fen);
+bool parseUciMove(Board *board, const char *moveText);
+Move findBestMove(Board *board, int depth);
 
 
 #ifdef __cplusplus

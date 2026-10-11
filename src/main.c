@@ -1,160 +1,164 @@
 #include <stdio.h>
 #include <string.h>
-#include <limits.h>
 #include <stdlib.h>
-
+#include <ctype.h>
+#include <limits.h>
 #include "bitboard.h"
-Move findBestMove(Board* board, int depth) {
-    Move legalMoves[512];
-    uint64_t moveCount = 0;
 
-    generateLegalMovesToArray(board, legalMoves, &moveCount, 512);
-
-    if (moveCount == 0) {
-        Move nullMove = {0};
-        return nullMove;
+static bool applyUciMove(Board *board, const char *text) {
+    size_t len = strlen(text);
+    if (len != 4 && len != 5) return false;
+    for (int i = 0; i < 4; ++i) {
+        char c = text[i];
+        bool bad = (i % 2 == 0) ? (c < 'a' || c > 'h') : (c < '1' || c > '8');
+        if (bad) return false;
+    }    
+    
+    Move requested = { (text[1]-'1')*8 + text[0]-'a', (text[3]-'1')*8 + text[2]-'a', 0, 0 };
+    
+    if (len == 5) {
+        switch (tolower((unsigned char)text[4])) {
+            case 'q': requested.promotionPiece=QUEEN; break; case 'r': requested.promotionPiece=ROOK; break;
+            case 'b': requested.promotionPiece=BISHOP; break; case 'n': requested.promotionPiece=KNIGHT; break;
+            default: return false;
+        }
+    
     }
-
-    Move bestMove = legalMoves[0];
-    int bestScore = INT_MIN;
-
-    for (uint64_t i = 0; i < moveCount; i++) {
-        Undo u;
-        Move currentMove = legalMoves[i];
-
-        applyMove(board, currentMove, &u);
-        int score = -search(board, depth-1);
-        unmakeMove(board, &u);
-
-        if (score > bestScore) {
-            bestScore = score;
-            bestMove = currentMove;
+    
+    Move legal[512]; uint64_t count=0;
+    
+    generateLegalMovesToArray(board, legal, &count, 512);
+    
+    for (uint64_t i=0; i<count; ++i) {
+        if (legal[i].from == requested.from && legal[i].to == requested.to &&
+            legal[i].promotionPiece == requested.promotionPiece) {
+            Undo undo;
+            return applyMove(board, legal[i], &undo);
         }
     }
-
-    return bestMove;
+    return false;
 }
 
+static bool setPosition(Board *board, char *arguments) {
+    
+    while (isspace((unsigned char)*arguments)) arguments++;
+    
+    char *cursor = arguments;
+    char *wordEnd = cursor;
+    
+    while (*wordEnd && !isspace((unsigned char)*wordEnd)) wordEnd++;
+    
+    char *moves = strstr(cursor, "moves ");
+    char *moveTokens = NULL;
+    
+    if (moves && (moves == cursor || !isspace((unsigned char)moves[-1]))) moves = NULL;
+    
+    if ((size_t)(wordEnd - cursor) == 8 && strncmp(cursor, "startpos", 8) == 0) {
+        boardSetup(board);
+        if (moves && moves > wordEnd) moveTokens = moves + 6;
+        else if (*wordEnd && !isspace((unsigned char)*wordEnd)) return false;
+    } else if ((size_t)(wordEnd - cursor) == 3 && strncmp(cursor, "fen", 3) == 0) {
+        while (isspace((unsigned char)*wordEnd)) wordEnd++;
+        char *fenMoves = strstr(wordEnd, " moves ");
+        if (fenMoves) *fenMoves = '\0';
+        if (!boardFromFen(board, wordEnd)) return false;
+        if (fenMoves) moveTokens = fenMoves + 7;
+    } else return false;
 
-void applyUciMove(Board* board, const char* moveStr) {
-    Move m;
-    memset(&m, 0, sizeof(m));
-    int fromFile = moveStr[0] - 'a';
-    int fromRank = moveStr[1] - '1';
-    int toFile   = moveStr[2] - 'a';
-    int toRank   = moveStr[3] - '1';
-
-    m.from = fromRank * 8 + fromFile;
-    m.to   = toRank   * 8 + toFile;
-
-    m.promotionPiece = 0;
-
-    if ((int)strlen(moveStr) >= 5) {
-        switch(moveStr[4]) {
-            case 'q': case 'Q': m.promotionPiece = QUEEN; break;
-            case 'r': case 'R': m.promotionPiece = ROOK;  break;
-            case 'b': case 'B': m.promotionPiece = BISHOP;break;
-            case 'n': case 'N': m.promotionPiece = KNIGHT;break;
-        }
+    while (moveTokens && *moveTokens) {
+        while (isspace((unsigned char)*moveTokens)) moveTokens++;
+        
+        if (!*moveTokens) break;
+        
+        char *end = moveTokens;
+        
+        while (*end && !isspace((unsigned char)*end)) end++;
+        
+        size_t length = (size_t)(end - moveTokens);
+        char moveText[8];
+        
+        if (length >= sizeof(moveText)) return false;
+        
+        memcpy(moveText, moveTokens, length);
+        
+        moveText[length] = '\0';
+        if (!applyUciMove(board, moveText)) return false;
+        if (!*end) break;
+        moveTokens = end + 1;
     }
-
-    Undo u;
-    applyMove(board, m, &u);
+    return true;
 }
 
-
-int main() {
+int main(void) {
+    
     initAttackTables();
     Board board;
     boardSetup(&board);
-
-    // printf("%d\n", countMoves(board, 5));
-
+    
     char line[4096];
-
+    
     while (fgets(line, sizeof(line), stdin)) {
-
-        // Command: uci
-        if (strncmp(line, "uci", 3) == 0) {
-            printf("uciok\n");
-            fflush(stdout);
+    
+        char *save = NULL;
+        char original[4096];
+        size_t lineLength = strcspn(line, "\r\n");
+        
+        memcpy(original, line, lineLength);
+        
+        original[lineLength] = '\0';
+        
+        char *command = strtok_r(line, " \t\r\n", &save);
+        
+        if (!command) continue;
+        if (strcmp(command, "position") == 0) {
+            char *args = original + strlen("position");
+            while (isspace((unsigned char)*args)) args++;
+            char *end = args + strlen(args);
+            while (end > args && isspace((unsigned char)end[-1])) *--end = '\0';
+            if (!setPosition(&board, args)) fprintf(stderr, "info string invalid position command\n");
+            continue;
         }
-        // Command: isready
-        else if (strncmp(line, "isready", 7) == 0) {
-            printf("readyok\n");
-            fflush(stdout);
-        }
-        // Command: ucinewgame
-        else if (strncmp(line, "ucinewgame", 10) == 0) {
+        if (strcmp(command, "uci") == 0) {
+            puts("id name C Bitboard Chess"); puts("id author Open source"); puts("uciok"); fflush(stdout);
+        } else if (strcmp(command, "isready") == 0) {
+            puts("readyok"); fflush(stdout);
+        } else if (strcmp(command, "ucinewgame") == 0) {
             boardSetup(&board);
-        }
-        // Command: position [startpos|fen] moves ...
-        else if (strncmp(line, "position", 8) == 0) {
-            char* ptr = line + 9;
-            if (strncmp(ptr, "startpos", 8) == 0) {
-                boardSetup(&board);
-                ptr += 8;
-            } else if (strncmp(ptr, "fen", 3) == 0) {
-                ptr += 3;
-            }
-
-            char* moves = strstr(ptr, "moves");
-            if (moves) {
-                moves += 6;
-                char movesCopy[2048];
-                strncpy(movesCopy, moves, sizeof(movesCopy)-1);
-                movesCopy[sizeof(movesCopy)-1] = '\0';
-                char* move = strtok(movesCopy, " \n");
-                while (move) {
-                    applyUciMove(&board, move);
-                    move = strtok(NULL, " \n");
+        } else if (strcmp(command, "go") == 0) {
+            
+            int depth=4;
+            char *token;
+            
+            while ((token = strtok_r(NULL, " \t\r\n", &save))) {
+                if (strcmp(token, "depth") == 0) {
+                    
+                    char *value = strtok_r(NULL, " \t\r\n", &save);
+                    char *end = NULL;
+                    long parsed = value ? strtol(value, &end, 10) : 0;
+                    
+                    if (!value || *end || parsed < 1) { depth=4; }
+                    else depth = parsed > MAX_DEPTH - 1 ? MAX_DEPTH - 1 : (int)parsed;
+                } else if (strcmp(token, "perft") == 0) {
+                    char *value = strtok_r(NULL, " \t\r\n", &save);
+                    char *end = NULL; long parsed = value ? strtol(value, &end, 10) : 0;
+                    
+                    if (!value || *end || parsed < 0 || parsed > 20) parsed = 1;
+                    printf("nodes %llu\n", (unsigned long long)countMoves(&board, (int)parsed)); fflush(stdout);
+                    depth = 0; break;
                 }
             }
-        }
-        // Command: go ...
-        else if (strncmp(line, "go", 2) == 0) {
-
-            if (strstr(line, "perft")) {
-                int depth = 1;
-                sscanf(line, "go perft %d", &depth);
-
-                uint64_t nodes = countMoves(&board, depth);
-                printf("nodes %llu\n", (unsigned long long)nodes);
+            if (depth) {
+                Move best = findBestMove(&board, depth);
+                
+                if (best.from < 0 || best.from > 63 || best.to < 0 || best.to > 63) puts("bestmove 0000");
+                else {
+                    printf("bestmove %c%c%c%c", fileChar(best.from%8), rankChar(best.from/8), fileChar(best.to%8), rankChar(best.to/8));
+                    if (best.promotionPiece) printf("%c", promotionChar(best.promotionPiece));
+                    putchar('\n');
+                }
                 fflush(stdout);
-                continue;
             }
-
-            int searchDepth = 4;
-            char* depthPtr = strstr(line, "depth");
-            if (depthPtr) {
-                sscanf(depthPtr, "depth %d", &searchDepth);
-            }
-
-            Move bestMove = findBestMove(&board, searchDepth);
-
-            if (bestMove.from < 0 || bestMove.from > 63) {
-                printf("bestmove 0000\n");
-                fflush(stdout);
-                continue;
-            }
-
-
-            printf("bestmove %c%c%c%c",
-                fileChar(bestMove.from % 8), rankChar(bestMove.from / 8),
-                fileChar(bestMove.to   % 8), rankChar(bestMove.to   / 8)
-            );
-            if (bestMove.promotionPiece != 0) {
-                printf("%c", promotionChar(bestMove.promotionPiece));
-            }
-            printf("\n");
-            fflush(stdout);
-        }
-
-        // Command: quit
-        else if (strncmp(line, "quit", 4) == 0) {
-            break;
-        }
+        } else if (strcmp(command, "quit") == 0) break;
     }
-
     return 0;
 }
